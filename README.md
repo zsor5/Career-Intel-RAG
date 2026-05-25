@@ -6,14 +6,14 @@ An AI-powered career intelligence system that answers natural language questions
 
 ## What it does
 
-Ask any career question in plain English and get a data-backed answer with an auto-selected visualization:
+Ask any career question in plain English and get a data-backed answer with an automatically selected visualization:
 
+- *"What industries pay software engineers the most?"*
+- *"I'm a nurse — what adjacent healthcare roles have better pay and job security?"*
 - *"What are the fastest growing jobs over the next 10 years?"*
-- *"I'm a software engineer — what higher paying roles can I transition to?"*
-- *"What healthcare jobs have the most openings and best job security?"*
-- *"What well paying jobs don't require a college degree?"*
+- *"I want to pivot from teaching — show me salary tradeoffs and difficulty"*
 
-Every response shows the generated SQL query so you can see exactly what data backed the answer.
+Every response shows the generated SQL query so you can see exactly what data backed the answer. A clickable follow-up question appears after each response to continue the conversation.
 
 ---
 
@@ -23,13 +23,17 @@ Every response shows the generated SQL query so you can see exactly what data ba
 User question → OpenAI embeddings → pgvector semantic search
                                           ↓
                           Claude generates SQL from schema + context
+                          (transition queries use hardcoded SQL patterns)
                                           ↓
                           PostgreSQL query executes against BLS/O*NET data
                                           ↓
-                          Claude interprets results → answer + visualization
+                          Claude interprets results → JSON with answer + follow-up
+                          Claude selects visualization type
+                                          ↓
+                          React renders appropriate chart component
 ```
 
-Hybrid retrieval combines vector search (semantic similarity) with SQL (structured facts) to handle questions neither approach can answer alone.
+Hybrid retrieval combines vector search (semantic similarity) with structured SQL queries to handle questions neither approach can answer alone.
 
 ---
 
@@ -39,7 +43,7 @@ Hybrid retrieval combines vector search (semantic similarity) with SQL (structur
 
 **Frontend** — React.js, Recharts, Axios
 
-**Data** — O*NET bulk database, BLS OES salary data, BLS Employment Projections (2024–2034)
+**Data** — O*NET bulk database, BLS OES salary data, BLS OES industry-specific data, BLS Employment Projections (2024–2034)
 
 ---
 
@@ -47,11 +51,47 @@ Hybrid retrieval combines vector search (semantic similarity) with SQL (structur
 
 | Table | Contents |
 |---|---|
-| `roles` | 1,016 occupations with salaries, growth projections, seniority |
+| `roles` | 1,016 occupations with salaries, seniority, family, growth projections |
 | `skills` | 35 skill categories |
 | `role_skills` | 31,290 role-skill mappings with importance levels |
-| `career_transitions` | 12,322 transition paths with salary delta and difficulty |
-| `role_education` | Education level breakdowns per role |
+| `career_transitions` | 12,322 transition paths with salary delta and difficulty score |
+| `role_education` | 4,223 education level breakdowns per role with percentages |
+| `industries` | 62 industries from BLS OES |
+| `role_industry` | 7,351 role-industry salary records showing pay differentials by sector |
+
+---
+
+## Visualizations
+
+The system automatically selects the best chart type based on query intent:
+
+| Query type | Visualization |
+|---|---|
+| Salary comparison across roles | Bar chart |
+| Salary distribution | Range chart (p25 / median / p75) |
+| Job recommendations | Ranked list with salary bars |
+| Career pivot analysis | Scatter plot (transition difficulty vs salary delta) |
+| Job growth / outlook | Color-coded bar chart by growth category |
+| Industry salary differentials | Bar chart ranked by sector pay |
+| Role comparison | Comparison table |
+
+---
+
+## Key Features
+
+**Hybrid RAG pipeline** — vector embeddings find semantically relevant roles, SQL retrieves verified facts. Grounded in government data rather than LLM training knowledge.
+
+**Text-to-SQL generation** — Claude generates PostgreSQL queries from natural language, with hardcoded fallback patterns for transition queries to ensure consistent results.
+
+**Industry salary intelligence** — surfaces salary differentials across 62 industries so you can see what a role pays in finance vs healthcare vs energy.
+
+**10-year job projections** — BLS 2024–2034 growth data with annual opening counts and growth category labels on every applicable role.
+
+**Education breakdowns** — percentage of workers in each role by education level, enabling questions like "what well paying jobs don't require a degree."
+
+**Career transition paths** — 12,322 derived transition paths with salary delta and difficulty scores, visualized as a scatter plot showing easy wins vs hard but lucrative pivots.
+
+**Clickable follow-up questions** — each response generates a contextual follow-up question you can fire with one click.
 
 ---
 
@@ -87,10 +127,11 @@ OPENAI_API_KEY=sk-...
 
 Download the following into your `data/` folder:
 - **O*NET bulk data** → [onetcenter.org/database.html](https://www.onetcenter.org/database.html), unzip into `data/O_net_txt/`
-- **BLS OES salaries** → national Excel file from [bls.gov/oes/tables.htm](https://www.bls.gov/oes/tables.htm)
+- **BLS OES national salaries** → national Excel file from [bls.gov/oes/tables.htm](https://www.bls.gov/oes/tables.htm)
+- **BLS OES industry salaries** → "National industry-specific" Excel file from the same page
 - **BLS projections** → Excel file from [bls.gov/emp/tables](https://www.bls.gov/emp/tables/occupational-projections-and-characteristics.htm)
 
-Then run the ingestion scripts in order:
+Run the ingestion scripts in order:
 
 ```bash
 python scripts/create_tables.py
@@ -101,6 +142,13 @@ python scripts/load_projections.py
 python scripts/load_education.py
 python scripts/generate_embeddings.py
 python scripts/load_transitions.py
+python scripts/load_industries.py
+```
+
+Verify everything loaded:
+
+```bash
+python scripts/check_db.py
 ```
 
 ### 4. Run the app
