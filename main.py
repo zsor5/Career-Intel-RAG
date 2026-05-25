@@ -4,6 +4,7 @@ from pydantic import BaseModel
 import psycopg2
 import anthropic
 import openai
+import json
 import os
 from dotenv import load_dotenv
 
@@ -34,13 +35,14 @@ class QueryResponse(BaseModel):
     results: list
     viz_hint: str
     columns: list
+    followup: str | None = None
 
 SCHEMA = """
 roles (
     role_id TEXT,
     title TEXT,
-    seniority_level TEXT,       -- 'entry', 'mid', 'senior', 'leadership'
-    family TEXT,                -- 'engineering', 'data', 'product', 'design', 'business', 'healthcare', 'other'
+    seniority_level TEXT,
+    family TEXT,
     description TEXT,
     avg_salary_usd INTEGER,
     salary_p25 INTEGER,
@@ -74,6 +76,19 @@ role_education (
     role_id TEXT,
     education_level TEXT,
     education_pct FLOAT
+)
+industries (
+    industry_id INTEGER,
+    naics_code TEXT,
+    name TEXT
+)
+role_industry (
+    role_id TEXT,
+    industry_id INTEGER,
+    avg_salary INTEGER,
+    salary_p25 INTEGER,
+    salary_p75 INTEGER,
+    total_employed INTEGER
 )
 """
 
@@ -149,6 +164,7 @@ Rules:
 - NEVER filter on exact role titles with WHERE title = '...' — always use WHERE title IN ({similar_titles}) or no title filter at all
 - For education questions JOIN role_education on role_id and use WHERE r.title IN ({similar_titles})
 - For growth or job security questions always include projected_growth_pct, projected_annual_openings, projected_growth_category
+- For industry salary questions join role_industry and industries: SELECT i.name, ri.avg_salary FROM role_industry ri JOIN industries i ON ri.industry_id = i.industry_id JOIN roles r ON ri.role_id = r.role_id WHERE r.title IN ({similar_titles}) ORDER BY ri.avg_salary DESC
 - Limit to 15 rows max
 - Return ONLY the SQL query, no explanation, no markdown, no backticks
 - For questions about education, degrees, or qualifications use role_education joined to roles
@@ -187,6 +203,7 @@ Rules:
 - If salary_p25 and salary_p75 both exist → prefer salary_range_chart over bar_chart
 - Never pick ranked_list if better columns exist for a more specific chart
 - Only pick stat_cards if fewer than 3 results
+- For industry salary comparisons use bar_chart
 
 Reply with ONLY the visualization type, nothing else."""
 
@@ -199,7 +216,7 @@ Reply with ONLY the visualization type, nothing else."""
 
 def interpret_results(question, sql, results, columns):
     if not results:
-        return "No results were found for that query. Try rephrasing your question or asking about a different role or skill set."
+        return "No results were found for that query. Try rephrasing your question or asking about a different role or skill set.", None
 
     results_text = "\n".join([
         str(dict(zip(columns, row))) for row in results[:10]
@@ -214,21 +231,30 @@ SQL query that was run: {sql}
 Data returned from the database:
 {results_text}
 
-Write a direct 2-3 sentence response to the user answering their question using the specific numbers and job titles from the data above.
-- Speak directly to the user in second person ("Based on the data...", "The top roles for you are...")
-- Never say "I don't have results" or "please share results" — the results are right above
-- Never ask the user for more information
-- Always cite specific figures from the data
-- End with one suggested follow-up question the user might find interesting
+Respond with a JSON object with exactly two fields:
+- "answer": a direct 2-3 sentence response using specific numbers and job titles from the data
+- "followup": a single natural follow-up question the user might want to ask next, phrased as if they are typing it themselves
 
-Your response:"""
+Rules:
+- Speak directly to the user in second person
+- Never say you don't have results
+- Always cite specific figures from the data
+- The followup should be a complete standalone question that makes sense without context
+- Return ONLY valid JSON, no markdown, no backticks
+
+JSON:"""
 
     message = anthropic_client.messages.create(
         model="claude-sonnet-4-5",
         max_tokens=400,
         messages=[{"role": "user", "content": prompt}]
     )
-    return message.content[0].text.strip()
+
+    try:
+        parsed = json.loads(message.content[0].text.strip())
+        return parsed.get("answer", ""), parsed.get("followup", "")
+    except:
+        return message.content[0].text.strip(), None
 
 @app.get("/health")
 def health():
@@ -253,6 +279,7 @@ def query(req: QueryRequest):
         cur.execute(sql)
         results = cur.fetchall()
         columns = [desc[0] for desc in cur.description]
+
         # Step 3: serialize results
         serialized = []
         for row in results:
@@ -268,14 +295,15 @@ def query(req: QueryRequest):
 
         # Step 4: viz hint + interpretation
         viz_hint = get_viz_hint(req.question, results, columns)
-        answer = interpret_results(req.question, sql, results, columns)
+        answer, followup = interpret_results(req.question, sql, results, columns)
 
         return QueryResponse(
             answer=answer,
             sql=sql,
             results=serialized,
             viz_hint=viz_hint,
-            columns=columns
+            columns=columns,
+            followup=followup
         )
 
     except Exception as e:
