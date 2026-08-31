@@ -134,7 +134,7 @@ JOIN roles r1 ON ct.from_role_id = r1.role_id
 JOIN roles r2 ON ct.to_role_id = r2.role_id
 WHERE r1.title IN ({titles_str})
 ORDER BY ct.avg_salary_delta DESC
-LIMIT 15
+LIMIT 5
 """
 
 def generate_sql(question, similar_roles, cur):
@@ -165,7 +165,7 @@ Rules:
 - For education questions JOIN role_education on role_id and use WHERE r.title IN ({similar_titles})
 - For growth or job security questions always include projected_growth_pct, projected_annual_openings, projected_growth_category
 - For industry salary questions join role_industry and industries: SELECT i.name, ri.avg_salary FROM role_industry ri JOIN industries i ON ri.industry_id = i.industry_id JOIN roles r ON ri.role_id = r.role_id WHERE r.title IN ({similar_titles}) ORDER BY ri.avg_salary DESC
-- Limit to 15 rows max
+- Limit to 5 rows max
 - Return ONLY the SQL query, no explanation, no markdown, no backticks
 - For questions about education, degrees, or qualifications use role_education joined to roles
 - When showing education data always ORDER BY education_pct DESC to show most common first
@@ -251,10 +251,18 @@ JSON:"""
     )
 
     try:
-        parsed = json.loads(message.content[0].text.strip())
+        text = message.content[0].text.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        parsed = json.loads(text.strip())
         return parsed.get("answer", ""), parsed.get("followup", "")
     except:
-        return message.content[0].text.strip(), None
+        raw = message.content[0].text.strip()
+        if raw.startswith("{") or raw.startswith("```"):
+            return "I found relevant results but had trouble formatting the response. Try rephrasing your question.", None
+        return raw, None
 
 @app.get("/health")
 def health():
